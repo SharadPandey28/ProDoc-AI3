@@ -52,7 +52,7 @@ def get_embeddings():
 
 
 # ------------------------
-# VECTOR STORE
+# VECTOR STORE (FIXED)
 # ------------------------
 from langchain_community.vectorstores import FAISS
 
@@ -61,10 +61,10 @@ def create_vector_store(chunks):
 
     class EmbedWrap:
         def embed_documents(self, texts):
-            return [e.tolist() for e in embed_model.encode(texts)]
+            return embed_model.encode(texts).tolist()
 
         def embed_query(self, text):
-            return embed_model.encode(text)[0].tolist()
+            return embed_model.encode([text])[0].tolist()
 
     embedder = EmbedWrap()
     return FAISS.from_documents(chunks, embedder)
@@ -92,7 +92,7 @@ def build_rag_chain(retriever):
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0.2,
-        api_key=st.secrets["OPENAI_API_KEY"]  # ONLY SECRET NEEDED
+        api_key=st.secrets["OPENAI_API_KEY"]
     )
 
     prompt = PromptTemplate(
@@ -113,7 +113,8 @@ def build_rag_chain(retriever):
         })
         |
         (lambda x: {
-            "context": "\n\n".join(doc.page_content for doc in x["context"]) if x["context"] else "NO_CONTEXT",
+            "context": "\n\n".join(doc.page_content for doc in x["context"])
+            if x["context"] else "NO_CONTEXT",
             "question": x["question"]
         })
         |
@@ -132,14 +133,13 @@ def build_profession_chain():
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0.3,
-        api_key=st.secrets["OPENAI_API_KEY"]  # ONLY SECRET NEEDED
+        api_key=st.secrets["OPENAI_API_KEY"]
     )
 
     prompt = PromptTemplate(
         input_variables=["profession", "rag_answer"],
         template=(
-            "You are an expert {profession}.\n"
-            "Write a conclusion from the {profession}'s perspective.\n\n"
+            "Write a conclusion from the perspective of a {profession}.\n\n"
             "Document Answer:\n{rag_answer}\n\n"
             "Conclusion:"
         )
