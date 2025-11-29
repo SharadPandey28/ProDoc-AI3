@@ -28,6 +28,50 @@ def load_document_from_streamlit(uploaded_file):
     return loader.load()
 
 
+
+from langchain.llms.base import LLM
+from typing import Optional, List
+import requests
+import json
+from pydantic import BaseModel, Field
+
+class RawOpenAIChatLLM(LLM, BaseModel):
+    api_key: str = Field(...)
+    model: str = Field(default="gpt-4o-mini")
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _call(self, prompt: str, stop: Optional[List[str]] = None):
+
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        response = requests.post(url, headers=headers, json=payload)
+        data = response.json()
+
+        try:
+            return data["choices"][0]["message"]["content"]
+        except:
+            return "API Error:\n" + json.dumps(data, indent=2)
+
+    @property
+    def _llm_type(self):
+        return "raw_openai_chat"
+
+    @property
+    def _identifying_params(self):
+        return {"model": self.model}
+
+
 # ============================================================
 # TEXT SPLITTER
 # ============================================================
