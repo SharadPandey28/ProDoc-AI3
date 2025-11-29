@@ -3,10 +3,11 @@ import tempfile
 import traceback
 import requests
 import json
+from typing import Optional, List
 
-# ============================================================
-# DOCUMENT LOADER
-# ============================================================
+# ---------------------------
+# Document loaders
+# ---------------------------
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 
 def load_document_from_streamlit(uploaded_file):
@@ -28,53 +29,9 @@ def load_document_from_streamlit(uploaded_file):
     return loader.load()
 
 
-
-from langchain.llms.base import LLM
-from typing import Optional, List
-import requests
-import json
-from pydantic import BaseModel, Field
-
-class RawOpenAIChatLLM(LLM, BaseModel):
-    api_key: str = Field(...)
-    model: str = Field(default="gpt-4o-mini")
-
-    class Config:
-        arbitrary_types_allowed = True
-
-    def _call(self, prompt: str, stop: Optional[List[str]] = None):
-
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-
-        response = requests.post(url, headers=headers, json=payload)
-        data = response.json()
-
-        try:
-            return data["choices"][0]["message"]["content"]
-        except:
-            return "API Error:\n" + json.dumps(data, indent=2)
-
-    @property
-    def _llm_type(self):
-        return "raw_openai_chat"
-
-    @property
-    def _identifying_params(self):
-        return {"model": self.model}
-
-
-# ============================================================
-# TEXT SPLITTER
-# ============================================================
+# ---------------------------
+# Text splitter
+# ---------------------------
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 def split_documents(documents):
@@ -85,80 +42,100 @@ def split_documents(documents):
     return splitter.split_documents(documents)
 
 
-# ============================================================
-# EMBEDDINGS (SentenceTransformer)
-# ============================================================
+# ---------------------------
+# Embeddings model
+# ---------------------------
 from sentence_transformers import SentenceTransformer
 
 @st.cache_resource
 def get_embeddings_model():
+    # model downloads on first run — stable and small
     return SentenceTransformer("all-MiniLM-L6-v2")
 
 
-# ============================================================
-# CHROMA VECTOR STORE
-# ============================================================
+# ---------------------------
+# Chroma vector store
+# ---------------------------
 from langchain_community.vectorstores import Chroma
 
 def create_vector_store(chunks):
     model = get_embeddings_model()
 
     class Embeddings:
-        def embed_documents(self, texts):
-            return model.encode(texts).tolist()
-        def embed_query(self, text):
-            return model.encode([text])[0].tolist()
+        # returns List[List[float]]
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            vectors = model.encode(texts)
+            return [v.tolist() for v in vectors]
+
+        # returns List[float]
+        def embed_query(self, text: str) -> List[float]:
+            vec = model.encode(text)
+            # model.encode(text) returns a 1-D vector for single string
+            return vec.tolist()
 
     embeddings = Embeddings()
 
-    return Chroma.from_documents(
+    vector_store = Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
-        collection_name="rag_docs",
+        collection_name="rag_docs"
     )
+    return vector_store
 
 
-# ============================================================
-# RETRIEVER
-# ============================================================
-def get_retriever(vector_store, k=5):
+# ---------------------------
+# Retriever
+# ---------------------------
+def get_retriever(vector_store, k: int = 5):
     return vector_store.as_retriever(search_kwargs={"k": k})
 
 
-# ============================================================
-# RAW HTTPS OPENAI LLM (NO SDK → NO PROXY BUG)
-# ============================================================
+# ---------------------------
+# Raw HTTP OpenAI LLM (Pydantic-compatible)
+# ---------------------------
+# LangChain LLM base in your version uses pydantic. To be safe we declare fields using pydantic.
 from langchain.llms.base import LLM
-from typing import Optional, List
+try:
+    # pydantic v1 / v2 compatible import
+    from pydantic import BaseModel, Field
+except Exception:
+    # fallback, but pydantic should exist in your environment
+    from pydantic import BaseModel, Field
 
-class RawOpenAIChatLLM(LLM):
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
-        self.api_key = api_key
-        self.model = model
+class RawOpenAIChatLLM(LLM, BaseModel):
+    api_key: str = Field(...)
+    model: str = Field(default="gpt-4o-mini")
 
-    def _call(self, prompt: str, stop: Optional[List[str]] = None):
+    class Config:
+        arbitrary_types_allowed = True
 
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
-
-        response = requests.post(url, headers=headers, json=payload)
-        data = response.json()
-
+        # simple POST call; handle network errors gracefully
         try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            data = resp.json()
+        except Exception as e:
+            return f"API/network error: {e}"
+
+        # try to extract text in common shapes
+        try:
+            # standard OpenAI chat response
             return data["choices"][0]["message"]["content"]
-        except:
-            return "API Error:\n" + json.dumps(data, indent=2)
+        except Exception:
+            # fallback: return whole json for debugging
+            return "API Error — unexpected response:\n" + json.dumps(data, indent=2)
 
     @property
-    def _llm_type(self):
+    def _llm_type(self) -> str:
         return "raw_openai_chat"
 
     @property
@@ -166,24 +143,52 @@ class RawOpenAIChatLLM(LLM):
         return {"model": self.model}
 
 
-# ============================================================
-# RAG CHAIN
-# ============================================================
+# ---------------------------
+# Helpers to safely extract text from runnable outputs
+# ---------------------------
+def extract_text(obj) -> str:
+    """
+    LangChain runnable.invoke can return different shapes.
+    This helper tries common possibilities and returns a plain string.
+    """
+    if obj is None:
+        return ""
+    # If it's already a string
+    if isinstance(obj, str):
+        return obj
+    # If it's a LangChain message-like with 'content'
+    try:
+        content = getattr(obj, "content", None)
+        if isinstance(content, str):
+            return content
+    except Exception:
+        pass
+    # If object has 'text' or 'output' keys
+    if isinstance(obj, dict):
+        for key in ("content", "text", "output"):
+            if key in obj and isinstance(obj[key], str):
+                return obj[key]
+    # If it's a pydantic model or has .__dict__, try to stringify
+    try:
+        s = str(obj)
+        return s
+    except Exception:
+        return ""
+
+
+# ---------------------------
+# RAG chain
+# ---------------------------
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnableMap, RunnablePassthrough
 
 def build_rag_chain(retriever):
-    llm = RawOpenAIChatLLM(
-        api_key=st.secrets["OPENAI_API_KEY"],
-        model="gpt-4o-mini"
-    )
+    llm = RawOpenAIChatLLM(api_key=st.secrets["OPENAI_API_KEY"], model="gpt-4o-mini")
 
     prompt = PromptTemplate(
         input_variables=["context", "question"],
         template="""
-Use ONLY the context to answer the question.
-
-If no context exists, summarize the entire document.
+Use ONLY the context to answer the question. If no context exists, summarize the entire document.
 
 CONTEXT:
 {context}
@@ -202,9 +207,7 @@ ANSWER:
         })
         |
         (lambda x: {
-            "context": "\n\n".join(
-                doc.page_content for doc in x["context"]
-            ) if x["context"] else "NO_CONTEXT",
+            "context": "\n\n".join(doc.page_content for doc in x["context"]) if x["context"] else "NO_CONTEXT",
             "question": x["question"],
         })
         |
@@ -212,99 +215,88 @@ ANSWER:
         |
         llm
     )
-
     return chain
 
 
-# ============================================================
-# PROFESSION CHAIN
-# ============================================================
+# ---------------------------
+# Profession conclusion chain
+# ---------------------------
 def build_profession_chain():
-    llm = RawOpenAIChatLLM(
-        api_key=st.secrets["OPENAI_API_KEY"],
-        model="gpt-4o-mini"
-    )
+    llm = RawOpenAIChatLLM(api_key=st.secrets["OPENAI_API_KEY"], model="gpt-4o-mini")
 
     prompt = PromptTemplate(
         input_variables=["profession", "rag_answer"],
         template="""
-Write a conclusion from the perspective of a {profession}.
-Use ONLY the answer below.
+You are an expert {profession}. Write a short conclusion from that perspective using ONLY the document answer below.
 
-ANSWER:
+DOCUMENT ANSWER:
 {rag_answer}
 
-CONCLUSION:
+CONCLUSION ({profession}):
 """
     )
-
     return prompt | llm
 
 
-# ============================================================
-# STREAMLIT UI
-# ============================================================
-st.set_page_config(page_title="RAG Analyzer — FINAL FIX", layout="wide")
-st.title("📄 RAG Document Analyzer (FINAL 100% WORKING VERSION 🚀🔥)")
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+st.set_page_config(page_title="RAG Document Analyzer", layout="wide")
+st.title("📄 RAG Document Analyzer (Final)")
 
-uploaded_file = st.file_uploader("Upload document", type=["pdf", "docx", "txt"])
+uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
-    # ---------------------- LOAD DOC ----------------------
+    # Load & split
     try:
         docs = load_document_from_streamlit(uploaded_file)
         chunks = split_documents(docs)
         st.success(f"Loaded {len(docs)} pages → {len(chunks)} chunks.")
-    except:
-        st.error("❌ Document load/split failed.")
+    except Exception:
+        st.error("❌ Failed loading/splitting document.")
         st.code(traceback.format_exc())
         st.stop()
 
-    # ---------------------- VECTOR STORE ----------------------
+    # Vector store
     try:
         vector_store = create_vector_store(chunks)
         retriever = get_retriever(vector_store)
-    except:
-        st.error("❌ Vector store failed.")
+    except Exception:
+        st.error("❌ Vector store creation failed.")
         st.code(traceback.format_exc())
         st.stop()
 
-    # ---------------------- INPUTS ----------------------
-    question = st.text_input("Ask a question:")
-    profession = st.selectbox(
-        "Choose profession for conclusion:",
-        ["Engineer", "Doctor", "Lawyer", "Teacher", "Student", "Developer"]
-    )
+    # Inputs
+    question = st.text_input("Enter your question:")
+    profession = st.selectbox("Select profession for conclusion:", ["Engineer","Doctor","Lawyer","Student","Teacher","Developer"])
 
     if st.button("Generate Answer"):
         if not question.strip():
-            st.warning("⚠ Enter a question first!")
+            st.warning("⚠ Please enter a question.")
             st.stop()
 
-        # ---------------------- RAG ----------------------
+        # RAG
         try:
             rag_chain = build_rag_chain(retriever)
-            rag_answer = rag_chain.invoke({"question": question})
-        except:
+            rag_raw = rag_chain.invoke({"question": question})
+            rag_text = extract_text(rag_raw)
+        except Exception:
             st.error("❌ RAG failed.")
             st.code(traceback.format_exc())
             st.stop()
 
-        # ---------------------- PROFESSION ----------------------
+        # Profession conclusion
         try:
             pro_chain = build_profession_chain()
-            conclusion = pro_chain.invoke({
-                "profession": profession,
-                "rag_answer": rag_answer,
-            })
-        except:
+            prof_raw = pro_chain.invoke({"profession": profession, "rag_answer": rag_text})
+            prof_text = extract_text(prof_raw)
+        except Exception:
             st.error("❌ Profession chain failed.")
             st.code(traceback.format_exc())
             st.stop()
 
-        # ---------------------- OUTPUT ----------------------
-        st.subheader("🔵 RAG Answer")
-        st.write(rag_answer)
+        st.subheader("🟦 RAG Answer")
+        st.write(rag_text)
 
-        st.subheader(f"🟢 Conclusion ({profession})")
-        st.write(conclusion)
+        st.subheader(f"🟩 Conclusion ({profession})")
+        st.write(prof_text)
