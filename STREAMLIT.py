@@ -34,7 +34,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 def split_documents(documents):
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
-        chunk_overlap=150
+        chunk_overlap=150,
     )
     return splitter.split_documents(documents)
 
@@ -50,7 +50,7 @@ def get_embeddings_model():
 
 
 # ============================================================
-# VECTOR STORE — CHROMA VERSION (COMPATIBLE WITH STREAMLIT CLOUD)
+# CHROMA VECTOR STORE (WORKS ON STREAMLIT CLOUD)
 # ============================================================
 from langchain_community.vectorstores import Chroma
 import chromadb
@@ -79,30 +79,55 @@ def create_vector_store(chunks):
 # RETRIEVER
 # ============================================================
 def get_retriever(vector_store, k=5):
-    return vector_store.as_retriever(
-        search_kwargs={"k": k}
-    )
+    return vector_store.as_retriever(search_kwargs={"k": k})
+
+
+# ============================================================
+# CUSTOM OPENAI CHAT LLM (NO PROXY BUG)
+# ============================================================
+from langchain.llms.base import LLM
+from typing import Optional, List
+from openai import OpenAI
+
+class OpenAIChatLLM(LLM):
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
+        self.client = OpenAI(api_key=api_key)
+        self.model = model
+
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message["content"]
+
+    @property
+    def _identifying_params(self) -> dict:
+        return {"model": self.model}
+
+    @property
+    def _llm_type(self) -> str:
+        return "openai_chat_custom"
 
 
 # ============================================================
 # RAG CHAIN
 # ============================================================
-from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnableMap, RunnablePassthrough
 
 def build_rag_chain(retriever):
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=st.secrets["OPENAI_API_KEY"]
+    llm = OpenAIChatLLM(
+        api_key=st.secrets["OPENAI_API_KEY"],
+        model="gpt-4o-mini"
     )
 
     prompt = PromptTemplate(
         input_variables=["context", "question"],
-        template="""Use ONLY the context to answer the question.
+        template="""
+Use ONLY the context to answer the question.
 
-If no context is available, summarize the entire document.
+If no context exists, summarize the entire document.
 
 CONTEXT:
 {context}
@@ -117,12 +142,14 @@ ANSWER:
     chain = (
         RunnableMap({
             "context": lambda x: retriever.get_relevant_documents(x["question"]),
-            "question": RunnablePassthrough()
+            "question": RunnablePassthrough(),
         })
         |
         (lambda x: {
-            "context": "\n\n".join(doc.page_content for doc in x["context"]) if x["context"] else "NO_CONTEXT",
-            "question": x["question"]
+            "context": "\n\n".join(
+                doc.page_content for doc in x["context"]
+            ) if x["context"] else "NO_CONTEXT",
+            "question": x["question"],
         })
         |
         prompt
@@ -137,21 +164,21 @@ ANSWER:
 # PROFESSION CHAIN
 # ============================================================
 def build_profession_chain():
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=st.secrets["OPENAI_API_KEY"]
+    llm = OpenAIChatLLM(
+        api_key=st.secrets["OPENAI_API_KEY"],
+        model="gpt-4o-mini"
     )
 
     prompt = PromptTemplate(
         input_variables=["profession", "rag_answer"],
-        template="""Write a conclusion from the perspective of a {profession}.  
-Base it ONLY on the document answer below.
+        template="""
+Write a conclusion from the perspective of a {profession}.
+Use ONLY the answer below.
 
-DOCUMENT ANSWER:
+ANSWER:
 {rag_answer}
 
-CONCLUSION ({profession}):
+CONCLUSION:
 """
     )
 
@@ -161,15 +188,13 @@ CONCLUSION ({profession}):
 # ============================================================
 # STREAMLIT UI
 # ============================================================
-st.set_page_config(page_title="RAG Document Analyzer — Chroma Version", layout="wide")
-st.title("📄 RAG Document Analyzer (ChromaDB Version — Works on Streamlit Cloud)")
+st.set_page_config(page_title="RAG Document Analyzer — FINAL FIX", layout="wide")
+st.title("📄 RAG Document Analyzer (Final Working Version — No Proxy Errors 😤🔥)")
 
-uploaded_file = st.file_uploader("Upload a document", type=["pdf", "docx", "txt"])
+uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
-    # -------------------------------------------
-    # Load & Split Document
-    # -------------------------------------------
+    # -------- Load & Split Document --------
     try:
         docs = load_document_from_streamlit(uploaded_file)
         chunks = split_documents(docs)
@@ -179,9 +204,7 @@ if uploaded_file:
         st.code(traceback.format_exc())
         st.stop()
 
-    # -------------------------------------------
-    # Build Vector Store
-    # -------------------------------------------
+    # -------- Build Vector Store --------
     try:
         vector_store = create_vector_store(chunks)
         retriever = get_retriever(vector_store)
@@ -190,21 +213,15 @@ if uploaded_file:
         st.code(traceback.format_exc())
         st.stop()
 
-    # -------------------------------------------
-    # Inputs
-    # -------------------------------------------
     question = st.text_input("Enter your question:")
     profession = st.selectbox(
         "Select profession:",
-        ["Engineer", "Doctor", "Lawyer", "Student", "Teacher", "Developer"]
+        ["Engineer", "Doctor", "Lawyer", "Student", "Teacher", "Developer"],
     )
 
-    # -------------------------------------------
-    # Generate Answer
-    # -------------------------------------------
     if st.button("Generate Answer"):
         if not question.strip():
-            st.warning("⚠ Enter a question first.")
+            st.warning("⚠ Please enter a question!")
             st.stop()
 
         try:
@@ -219,18 +236,15 @@ if uploaded_file:
             pro_chain = build_profession_chain()
             conclusion = pro_chain.invoke({
                 "profession": profession,
-                "rag_answer": rag_resp.content
+                "rag_answer": rag_resp,
             })
         except:
             st.error("❌ Profession chain failed.")
             st.code(traceback.format_exc())
             st.stop()
 
-        # -------------------------------------------
-        # OUTPUT
-        # -------------------------------------------
         st.subheader("🟦 RAG Answer")
-        st.write(rag_resp.content)
+        st.write(rag_resp)
 
         st.subheader(f"🟩 Conclusion ({profession})")
-        st.write(conclusion.content)
+        st.write(conclusion)
