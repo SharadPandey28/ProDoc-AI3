@@ -50,19 +50,21 @@ def get_embeddings_model():
 
 
 # ============================================================
-# CHROMA VECTOR STORE (WORKS ON STREAMLIT CLOUD)
+# CHROMA VECTOR STORE — STREAMLIT CLOUD SAFE
 # ============================================================
 from langchain_community.vectorstores import Chroma
-import chromadb
 
 def create_vector_store(chunks):
     model = get_embeddings_model()
 
     class Embeddings:
         def embed_documents(self, texts):
-            return model.encode(texts).tolist()
+            vectors = model.encode(texts)
+            return [v.tolist() for v in vectors]
+
         def embed_query(self, text):
-            return model.encode([text])[0].tolist()
+            vector = model.encode(text)
+            return vector.tolist()
 
     embeddings = Embeddings()
 
@@ -83,7 +85,7 @@ def get_retriever(vector_store, k=5):
 
 
 # ============================================================
-# CUSTOM OPENAI CHAT LLM (NO PROXY BUG)
+# CUSTOM OPENAI LLM (NO PROXY BUG)
 # ============================================================
 from langchain.llms.base import LLM
 from typing import Optional, List
@@ -97,7 +99,7 @@ class OpenAIChatLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message["content"]
 
@@ -146,9 +148,8 @@ ANSWER:
         })
         |
         (lambda x: {
-            "context": "\n\n".join(
-                doc.page_content for doc in x["context"]
-            ) if x["context"] else "NO_CONTEXT",
+            "context": "\n\n".join(doc.page_content for doc in x["context"])
+                       if x["context"] else "NO_CONTEXT",
             "question": x["question"],
         })
         |
@@ -188,8 +189,8 @@ CONCLUSION:
 # ============================================================
 # STREAMLIT UI
 # ============================================================
-st.set_page_config(page_title="RAG Document Analyzer — FINAL FIX", layout="wide")
-st.title("📄 RAG Document Analyzer (Final Working Version — No Proxy Errors 😤🔥)")
+st.set_page_config(page_title="RAG Document Analyzer — FINAL", layout="wide")
+st.title("📄 RAG Document Analyzer (Fully Fixed & Working 🚀🔥)")
 
 uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx", "txt"])
 
@@ -214,6 +215,7 @@ if uploaded_file:
         st.stop()
 
     question = st.text_input("Enter your question:")
+
     profession = st.selectbox(
         "Select profession:",
         ["Engineer", "Doctor", "Lawyer", "Student", "Teacher", "Developer"],
@@ -224,6 +226,7 @@ if uploaded_file:
             st.warning("⚠ Please enter a question!")
             st.stop()
 
+        # ----- RAG -----
         try:
             rag_chain = build_rag_chain(retriever)
             rag_resp = rag_chain.invoke({"question": question})
@@ -232,6 +235,7 @@ if uploaded_file:
             st.code(traceback.format_exc())
             st.stop()
 
+        # ----- Profession Conclusion -----
         try:
             pro_chain = build_profession_chain()
             conclusion = pro_chain.invoke({
