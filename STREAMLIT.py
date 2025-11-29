@@ -50,38 +50,26 @@ def get_embeddings_model():
 
 
 # ============================================================
-# VECTOR STORE — EXACTLY MATCHING YOUR INSTALLED FAISS API
+# VECTOR STORE — FINAL WORKING VERSION
 # ============================================================
 from langchain_community.vectorstores import FAISS
 
 def create_vector_store(chunks):
     model = get_embeddings_model()
 
-    # 1) convert chunks to texts
-    texts = [c.page_content for c in chunks]
+    # -------- Correct embeddings wrapper for FAISS.from_documents --------
+    class Embeddings:
+        def embed_documents(self, texts):
+            return model.encode(texts).tolist()
+        def embed_query(self, text):
+            return model.encode([text])[0].tolist()
 
-    # 2) embed documents
-    doc_vectors = model.encode(texts).tolist()
+    embeddings = Embeddings()
 
-    # 3) FAISS needs a pure callable (this is correct for your version)
-    def embed_query(text: str):
-        return model.encode([text])[0].tolist()
+    # -------- THE ONLY VALID WAY for your FAISS version --------
+    vector_store = FAISS.from_documents(chunks, embeddings)
 
-    # 4) Create FAISS index
-    index = FAISS(embedding_function=embed_query)
-
-    # 5) Add embeddings (API EXACTLY from your error)
-    #
-    # Required signature:
-    #   add_embeddings(text_embeddings, embeddings, metadatas=None)
-    #
-    index.add_embeddings(
-        text_embeddings=texts,
-        embeddings=doc_vectors,
-        metadatas=None
-    )
-
-    return index
+    return vector_store
 
 
 # ============================================================
@@ -137,6 +125,7 @@ Answer:
         |
         llm
     )
+
     return chain
 
 
@@ -154,7 +143,7 @@ def build_profession_chain():
         input_variables=["profession", "rag_answer"],
         template="""
 You are an expert {profession}.
-Write a conclusion from the {profession}'s perspective, based only on the given answer.
+Write a conclusion from the point-of-view of that profession.
 
 Document Answer:
 {rag_answer}
@@ -162,6 +151,7 @@ Document Answer:
 Conclusion:
 """
     )
+
     return prompt | llm
 
 
@@ -169,11 +159,15 @@ Conclusion:
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="RAG Document Analyzer", layout="wide")
-st.title("📄 RAG Document Analyzer (FINAL WORKING VERSION)")
+st.title("📄 RAG Document Analyzer — FINAL WORKING VERSION ✔️")
+
 
 uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
+    # -------------------------------------------
+    # Load & Split Document
+    # -------------------------------------------
     try:
         docs = load_document_from_streamlit(uploaded_file)
         chunks = split_documents(docs)
@@ -183,7 +177,9 @@ if uploaded_file:
         st.code(traceback.format_exc())
         st.stop()
 
-    # Build vector store
+    # -------------------------------------------
+    # Build Vector Store
+    # -------------------------------------------
     try:
         vector_store = create_vector_store(chunks)
         retriever = get_retriever(vector_store)
@@ -192,18 +188,24 @@ if uploaded_file:
         st.code(traceback.format_exc())
         st.stop()
 
+    # -------------------------------------------
+    # Inputs
+    # -------------------------------------------
     question = st.text_input("Enter your question:")
+
     profession = st.selectbox(
         "Select profession:",
         ["Engineer", "Doctor", "Lawyer", "Student", "Teacher", "Developer"]
     )
 
+    # -------------------------------------------
+    # Generate Answer
+    # -------------------------------------------
     if st.button("Generate Answer"):
         if not question.strip():
-            st.warning("Enter a question first.")
+            st.warning("⚠ Enter a question first.")
             st.stop()
 
-        # RAG ANSWER
         try:
             rag_chain = build_rag_chain(retriever)
             rag_resp = rag_chain.invoke({"question": question})
@@ -212,7 +214,6 @@ if uploaded_file:
             st.code(traceback.format_exc())
             st.stop()
 
-        # PROFESSION OUTPUT
         try:
             pro_chain = build_profession_chain()
             conclusion = pro_chain.invoke({
@@ -224,6 +225,9 @@ if uploaded_file:
             st.code(traceback.format_exc())
             st.stop()
 
+        # -------------------------------------------
+        # OUTPUT
+        # -------------------------------------------
         st.subheader("🟦 RAG Answer")
         st.write(rag_resp.content)
 
