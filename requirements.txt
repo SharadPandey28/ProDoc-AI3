@@ -1,0 +1,9 @@
+streamlit
+langchain==0.2.12
+langchain-core==0.2.27
+langchain-community==0.2.10
+langchain-openai==0.1.7
+sentence-transformers
+faiss-cpu
+pypdf
+docx2txt
