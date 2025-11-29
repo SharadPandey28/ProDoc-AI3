@@ -84,9 +84,11 @@ from langchain.llms.base import LLM
 from typing import Optional, List
 
 class RawOpenAIChatLLM(LLM):
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
-        self.api_key = api_key
-        self.model = model
+    api_key: str
+    model: str = "gpt-4o-mini"
+
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini", **kwargs):
+        super().__init__(api_key=api_key, model=model, **kwargs)
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         import requests, json
@@ -101,16 +103,17 @@ class RawOpenAIChatLLM(LLM):
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        try:
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            data = r.json()
-        except Exception as e:
-            return f"NETWORK ERROR: {e}"
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        data = r.json()
 
-        try:
-            return data["choices"][0]["message"]["content"]
-        except:
-            return json.dumps(data, indent=2)
+        # normal
+        if "choices" in data:
+            try:
+                return data["choices"][0]["message"]["content"]
+            except:
+                pass
+
+        return json.dumps(data, indent=2)
 
     @property
     def _llm_type(self):
@@ -119,6 +122,7 @@ class RawOpenAIChatLLM(LLM):
     @property
     def _identifying_params(self):
         return {"model": self.model}
+
 
 # ============================================================
 # RAG CHAIN
