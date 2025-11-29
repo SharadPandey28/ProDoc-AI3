@@ -50,14 +50,14 @@ def get_embeddings_model():
 
 
 # ============================================================
-# VECTOR STORE — FINAL WORKING VERSION
+# VECTOR STORE — CHROMA VERSION (COMPATIBLE WITH STREAMLIT CLOUD)
 # ============================================================
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
+import chromadb
 
 def create_vector_store(chunks):
     model = get_embeddings_model()
 
-    # -------- Correct embeddings wrapper for FAISS.from_documents --------
     class Embeddings:
         def embed_documents(self, texts):
             return model.encode(texts).tolist()
@@ -66,8 +66,11 @@ def create_vector_store(chunks):
 
     embeddings = Embeddings()
 
-    # -------- THE ONLY VALID WAY for your FAISS version --------
-    vector_store = FAISS.from_documents(chunks, embeddings)
+    vector_store = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        collection_name="rag_docs"
+    )
 
     return vector_store
 
@@ -97,16 +100,17 @@ def build_rag_chain(retriever):
 
     prompt = PromptTemplate(
         input_variables=["context", "question"],
-        template="""
-If context is 'NO_CONTEXT', summarize the full document.
-Otherwise answer using the context.
+        template="""Use ONLY the context to answer the question.
 
-Context:
+If no context is available, summarize the entire document.
+
+CONTEXT:
 {context}
 
-Question: {question}
+QUESTION:
+{question}
 
-Answer:
+ANSWER:
 """
     )
 
@@ -141,14 +145,13 @@ def build_profession_chain():
 
     prompt = PromptTemplate(
         input_variables=["profession", "rag_answer"],
-        template="""
-You are an expert {profession}.
-Write a conclusion from the point-of-view of that profession.
+        template="""Write a conclusion from the perspective of a {profession}.  
+Base it ONLY on the document answer below.
 
-Document Answer:
+DOCUMENT ANSWER:
 {rag_answer}
 
-Conclusion:
+CONCLUSION ({profession}):
 """
     )
 
@@ -158,11 +161,10 @@ Conclusion:
 # ============================================================
 # STREAMLIT UI
 # ============================================================
-st.set_page_config(page_title="RAG Document Analyzer", layout="wide")
-st.title("📄 RAG Document Analyzer — FINAL WORKING VERSION ✔️")
+st.set_page_config(page_title="RAG Document Analyzer — Chroma Version", layout="wide")
+st.title("📄 RAG Document Analyzer (ChromaDB Version — Works on Streamlit Cloud)")
 
-
-uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx", "txt"])
+uploaded_file = st.file_uploader("Upload a document", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
     # -------------------------------------------
@@ -171,7 +173,7 @@ if uploaded_file:
     try:
         docs = load_document_from_streamlit(uploaded_file)
         chunks = split_documents(docs)
-        st.success(f"Loaded {len(docs)} pages → {len(chunks)} text chunks.")
+        st.success(f"Loaded {len(docs)} pages → {len(chunks)} chunks.")
     except:
         st.error("❌ Failed loading/splitting document.")
         st.code(traceback.format_exc())
@@ -184,7 +186,7 @@ if uploaded_file:
         vector_store = create_vector_store(chunks)
         retriever = get_retriever(vector_store)
     except:
-        st.error("❌ Failed creating vector store / retriever.")
+        st.error("❌ Vector store creation failed.")
         st.code(traceback.format_exc())
         st.stop()
 
@@ -192,7 +194,6 @@ if uploaded_file:
     # Inputs
     # -------------------------------------------
     question = st.text_input("Enter your question:")
-
     profession = st.selectbox(
         "Select profession:",
         ["Engineer", "Doctor", "Lawyer", "Student", "Teacher", "Developer"]
