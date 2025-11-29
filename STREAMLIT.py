@@ -52,22 +52,26 @@ def get_embeddings():
 
 
 # ------------------------
-# VECTOR STORE (FIXED)
+# VECTOR STORE (FINAL FIX)
 # ------------------------
 from langchain_community.vectorstores import FAISS
 
 def create_vector_store(chunks):
     embed_model = get_embeddings()
 
-    class EmbedWrap:
-        def embed_documents(self, texts):
-            return embed_model.encode(texts).tolist()
+    # FAISS calls this for query only
+    def embed_query(text: str):
+        return embed_model.encode([text])[0].tolist()
 
-        def embed_query(self, text):
-            return embed_model.encode([text])[0].tolist()
+    # Encode documents manually
+    texts = [c.page_content for c in chunks]
+    vectors = embed_model.encode(texts).tolist()
 
-    embedder = EmbedWrap()
-    return FAISS.from_documents(chunks, embedder)
+    return FAISS.from_embeddings(
+        embeddings=vectors,
+        texts=texts,
+        embedding_function=embed_query
+    )
 
 
 # ------------------------
