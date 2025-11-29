@@ -55,23 +55,41 @@ def get_embeddings_model():
 # VECTOR STORE — use official langchain FAISS.from_documents
 # ------------------------
 # Use the official langchain vectorstore which expects an "embeddings" object with embed_documents / embed_query
-from langchain.vectorstores import FAISS  # official wrapper
-from langchain.schema import Document
+# ------------------------
+# VECTOR STORE — FINAL, 100% COMPATIBLE
+# ------------------------
+from langchain_community.vectorstores import FAISS
 
 def create_vector_store(chunks):
-    embed_model = get_embeddings_model()
+    model = get_embeddings_model()
 
-    class EmbedWrap:
-        # embed_documents expects list[str] -> list[list[float]]
-        def embed_documents(self, texts):
-            # SentenceTransformer returns numpy array; convert to list of lists
-            return embed_model.encode(texts).tolist()
+    # 1) Convert documents into strings
+    texts = [c.page_content for c in chunks]
 
-        # embed_query expects a single string -> list[float]
-        def embed_query(self, text):
-            return embed_model.encode([text])[0].tolist()
+    # 2) Embed all texts (documents)
+    vectors = model.encode(texts).tolist()
 
-    embeddings = EmbedWrap()
+    # 3) Query embedding FUNCTION (FAISS calls this directly)
+    def embed_query(text: str):
+        return model.encode([text])[0].tolist()
+
+    # 4) Build FAISS index — THIS is the correct call for your version
+    index = FAISS(
+        embedding_function=embed_query,   # THIS MUST BE A FUNCTION
+        index=None,
+        docstore=None,
+        index_to_docstore_id=None
+    )
+
+    # FAISS expects .add_texts OR .add_embeddings depending on version
+    index.add_embeddings(
+        embeddings=vectors,
+        metadatas=None,
+        texts=texts
+    )
+
+    return index
+
 
     # FAISS.from_documents expects an iterable of langchain Document objects.
     # chunks should already be Document objects from loader + splitter.
